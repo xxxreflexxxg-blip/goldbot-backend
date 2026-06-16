@@ -208,39 +208,23 @@ app.get('/api/admin/stats', auth, admin, async (req,res) => {
   } catch(e) { res.status(500).json({ error:e.message }); }
 });
 
-// PURCHASE
+// PURCHASE - ruaj blerjen, MOS krijo komisione ende
 app.post('/api/user/purchase', auth, async (req,res) => {
   try {
     const { method, amount, txhash } = req.body;
 
-    // Krijo purchase record
+    // Kontrollo nese ka blerë tashmë
+    const { data: existing } = await supabase.from('sales')
+      .select('id').eq('buyer_id',req.user.id).eq('status','delivered').single();
+    if(existing) return res.status(400).json({ error:'You already purchased this EA' });
+
+    // Krijo purchase record - komisioni do behet vetem pas konfirmimit
     const { data: purchase, error } = await supabase.from('sales')
       .insert({ buyer_id:req.user.id, plan:'lifetime', amount:amount||400,
-        payment_method: method, tx_hash: txhash||null, bonus_paid:false })
+        payment_method: method, tx_hash: txhash||null,
+        bonus_paid:false, status:'pending' })
       .select().single();
     if(error) return res.status(500).json({ error:error.message });
-
-    // Gjej referrer (parent) dhe kreditoje $100
-    const { data: buyer } = await supabase.from('users').select('parent_id,name,email').eq('id',req.user.id).single();
-    if(buyer?.parent_id) {
-      await supabase.from('commissions').insert({
-        from_user_id: req.user.id,
-        to_user_id:   buyer.parent_id,
-        level: 1, amount: 100, type:'bonus', status:'paid'
-      });
-      await supabase.rpc('increment_wallet', { uid:buyer.parent_id, amount:100 });
-
-      // L2 komisioni $30 te grandparent
-      const { data: parent } = await supabase.from('users').select('parent_id').eq('id',buyer.parent_id).single();
-      if(parent?.parent_id) {
-        await supabase.from('commissions').insert({
-          from_user_id: req.user.id,
-          to_user_id:   parent.parent_id,
-          level: 2, amount: 30, type:'bonus', status:'paid'
-        });
-        await supabase.rpc('increment_wallet', { uid:parent.parent_id, amount:30 });
-      }
-    }
 
     res.json({ success:true, purchase });
   } catch(e) { res.status(500).json({ error:e.message }); }
@@ -255,10 +239,53 @@ app.get('/api/admin/purchases', auth, admin, async (req,res) => {
   } catch(e) { res.status(500).json({ error:e.message }); }
 });
 
+// MARK DELIVERED - ketu behet komisioni
 app.patch('/api/admin/purchases/:id', auth, admin, async (req,res) => {
   try {
-    await supabase.from('sales').update({ status: req.body.status }).eq('id',req.params.id);
+    const { status } = req.body;
+
+    const { data: sale } = await supabase.from('sales').select('*').eq('id',req.params.id).single();
+    if(!sale) return res.status(404).json({ error:'Not found' });
+
+    await supabase.from('sales').update({ status, bonus_paid: status==='delivered' }).eq('id',req.params.id);
+
+    // Kreditoje komisionin VETEM kur delivered dhe nuk eshte paguar me pare
+    if(status==='delivered' && !sale.bonus_paid) {
+      const { data: buyer } = await supabase.from('users').select('parent_id').eq('id',sale.buyer_id).single();
+
+      if(buyer?.parent_id) {
+        // L1 - $100 te referrer
+        await supabase.from('commissions').insert({
+          from_user_id: sale.buyer_id,
+          to_user_id:   buyer.parent_id,
+          level: 1, amount: 100, type:'bonus', status:'paid'
+        });
+        await supabase.rpc('increment_wallet', { uid:buyer.parent_id, amount:100 });
+
+        // L2 - $30 te grandparent
+        const { data: parent } = await supabase.from('users').select('parent_id').eq('id',buyer.parent_id).single();
+        if(parent?.parent_id) {
+          await supabase.from('commissions').insert({
+            from_user_id: sale.buyer_id,
+            to_user_id:   parent.parent_id,
+            level: 2, amount: 30, type:'bonus', status:'paid'
+          });
+          await supabase.rpc('increment_wallet', { uid:parent.parent_id, amount:30 });
+        }
+      }
+    }
+
     res.json({ success:true });
   } catch(e) { res.status(500).json({ error:e.message }); }
+});
+
+// CHECK PURCHASE STATUS
+app.get('/api/user/purchase-status', auth, async (req,res) => {
+  try {
+    const { data } = await supabase.from('sales')
+      .select('id,status,created_at').eq('buyer_id',req.user.id)
+      .order('created_at',{ascending:false}).limit(1).single();
+    res.json({ purchased: !!data, status: data?.status||null });
+  } catch(e) { res.json({ purchased:false, status:null }); }
 });
 app.listen(PORT, () => console.log(`GoldBot API on port ${PORT}`));
