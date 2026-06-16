@@ -19,7 +19,7 @@ const supabase = createClient(
 );
 
 // ── MIDDLEWARE ───────────────────────────────────────────────────
-app.use(cors({ origin: process.env.FRONTEND_URL || '*', credentials: true }));
+app.use(cors({ origin: '*', credentials: false }));
 app.use(express.json());
 
 // ── AUTH MIDDLEWARE ──────────────────────────────────────────────
