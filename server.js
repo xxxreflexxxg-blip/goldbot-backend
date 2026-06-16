@@ -208,4 +208,57 @@ app.get('/api/admin/stats', auth, admin, async (req,res) => {
   } catch(e) { res.status(500).json({ error:e.message }); }
 });
 
+// PURCHASE
+app.post('/api/user/purchase', auth, async (req,res) => {
+  try {
+    const { method, amount, txhash } = req.body;
+
+    // Krijo purchase record
+    const { data: purchase, error } = await supabase.from('sales')
+      .insert({ buyer_id:req.user.id, plan:'lifetime', amount:amount||400,
+        payment_method: method, tx_hash: txhash||null, bonus_paid:false })
+      .select().single();
+    if(error) return res.status(500).json({ error:error.message });
+
+    // Gjej referrer (parent) dhe kreditoje $100
+    const { data: buyer } = await supabase.from('users').select('parent_id,name,email').eq('id',req.user.id).single();
+    if(buyer?.parent_id) {
+      await supabase.from('commissions').insert({
+        from_user_id: req.user.id,
+        to_user_id:   buyer.parent_id,
+        level: 1, amount: 100, type:'bonus', status:'paid'
+      });
+      await supabase.rpc('increment_wallet', { uid:buyer.parent_id, amount:100 });
+
+      // L2 komisioni $30 te grandparent
+      const { data: parent } = await supabase.from('users').select('parent_id').eq('id',buyer.parent_id).single();
+      if(parent?.parent_id) {
+        await supabase.from('commissions').insert({
+          from_user_id: req.user.id,
+          to_user_id:   parent.parent_id,
+          level: 2, amount: 30, type:'bonus', status:'paid'
+        });
+        await supabase.rpc('increment_wallet', { uid:parent.parent_id, amount:30 });
+      }
+    }
+
+    res.json({ success:true, purchase });
+  } catch(e) { res.status(500).json({ error:e.message }); }
+});
+
+// ADMIN PURCHASES
+app.get('/api/admin/purchases', auth, admin, async (req,res) => {
+  try {
+    const { data } = await supabase.from('sales')
+      .select('*, buyer:buyer_id(name,email)').order('created_at',{ascending:false});
+    res.json(data||[]);
+  } catch(e) { res.status(500).json({ error:e.message }); }
+});
+
+app.patch('/api/admin/purchases/:id', auth, admin, async (req,res) => {
+  try {
+    await supabase.from('sales').update({ status: req.body.status }).eq('id',req.params.id);
+    res.json({ success:true });
+  } catch(e) { res.status(500).json({ error:e.message }); }
+});
 app.listen(PORT, () => console.log(`GoldBot API on port ${PORT}`));
