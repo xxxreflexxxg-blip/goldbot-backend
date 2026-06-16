@@ -65,13 +65,7 @@ app.post('/api/auth/register', async (req,res) => {
       .select().single();
     if (error) return res.status(500).json({ error: error.message });
 
-    if (parentId) {
-      await supabase.from('commissions').insert({
-        from_user_id:user.id, to_user_id:parentId,
-        level:1, amount:100, type:'bonus', status:'paid'
-      });
-      await supabase.rpc('increment_wallet', { uid:parentId, amount:100 });
-    }
+    // NUK kreditohet komisioni ketu - vetem kur bli EA dhe admini konfirmon
 
     const token = jwt.sign({ id:user.id, email:user.email, role:user.role }, process.env.JWT_SECRET, { expiresIn:'7d' });
     res.json({ token, user:{ id:user.id, name:user.name, email:user.email, refCode:user.ref_code, wallet:user.wallet, role:user.role }});
